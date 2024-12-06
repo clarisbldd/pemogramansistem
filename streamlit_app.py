@@ -1,151 +1,85 @@
 import streamlit as st
 import pandas as pd
-import math
-from pathlib import Path
+from sklearn.svm import SVC
+from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.metrics import accuracy_score, precision_score, recall_score, ConfusionMatrixDisplay
+import matplotlib.pyplot as plt
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
-
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
-
+# Fungsi untuk memuat data
 @st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+def load_data():
+    data = pd.read_csv('car_evaluation_with.csv')
+    le = LabelEncoder()
+    categorical_columns = data.select_dtypes(include=['object']).columns
+    for col in categorical_columns:
+        data[col] = le.fit_transform(data[col])
+    return data
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+# Fungsi untuk preprocessing dan split data
+@st.cache_data
+def preprocess_data(df):
+    y = df['unacc']
+    x = df.drop(columns=['unacc'])
+    scaler = StandardScaler()
+    x_scaled = scaler.fit_transform(x)
+    x_train, x_test, y_train, y_test = train_test_split(x_scaled, y, test_size=0.3, random_state=42)
+    return x_train, x_test, y_train, y_test
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+# Fungsi untuk grid search pada SVM
+def optimize_svm(x_train, y_train):
+    param_grid = {
+        'C': [0.1, 1, 10],
+        'kernel': ['linear', 'rbf'],
+        'gamma': ['scale', 'auto']
+    }
+    grid = GridSearchCV(SVC(), param_grid, cv=5, scoring='accuracy', n_jobs=-1)
+    grid.fit(x_train, y_train)
+    return grid.best_estimator_
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
+# Fungsi utama aplikasi
+def main():
+    st.title("Car Evaluation Binary Classification with Optimization")
+    st.sidebar.title("Optimization Settings")
+    st.markdown("An enhanced model to predict car acceptability 🚗")
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
+    # Memuat dan memproses data
+    df = load_data()
+    x_train, x_test, y_train, y_test = preprocess_data(df)
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+    # Sidebar untuk pengaturan model
+    st.sidebar.subheader("Optimization Options")
+    if st.sidebar.button("Run Optimization"):
+        st.subheader("Support Vector Machine (SVM) with Optimization")
+        best_model = optimize_svm(x_train, y_train)
+        
+        # Evaluasi model
+        y_pred = best_model.predict(x_test)
+        acc = accuracy_score(y_test, y_pred)
+        prec = precision_score(y_test, y_pred, average='weighted')
+        rec = recall_score(y_test, y_pred, average='weighted')
 
-    return gdp_df
+        st.write(f"Best Model Parameters: {best_model}")
+        st.write(f"Accuracy: {acc:.4f}")
+        st.write(f"Precision: {prec:.4f}")
+        st.write(f"Recall: {rec:.4f}")
 
-gdp_df = get_gdp_data()
+        # Confusion Matrix
+        st.subheader("Confusion Matrix")
+        fig, ax = plt.subplots()
+        disp = ConfusionMatrixDisplay.from_estimator(best_model, x_test, y_test, ax=ax, display_labels=['unacc', 'acc', 'good', 'vgood'])
+        st.pyplot(fig)
 
-# -----------------------------------------------------------------------------
-# Draw the actual page
+        # Cross-Validation
+        st.subheader("Cross-Validation Results")
+        scores = cross_val_score(best_model, x_train, y_train, cv=5, scoring='accuracy')
+        st.write(f"Cross-Validated Accuracy: {scores.mean():.4f}")
 
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
+    # Opsi untuk menampilkan data mentah
+    if st.sidebar.checkbox("Show Raw Data"):
+        st.subheader("Car Evaluation Data")
+        st.write(df)
 
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+# Menjalankan aplikasi
+if __name__ == '__main__':
+    main()
